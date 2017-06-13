@@ -1,87 +1,155 @@
-import sys
+#import sys
 import os
 import numpy
 from Bio import SeqIO
-import pylab
+import minion_read_collection
+from minion_read_collection import *#minionReadCollection
+import barcode_demultiplexer
+from barcode_demultiplexer import *
+from os.path import split, join, isdir, isfile
+from os import makedirs
 #from Bio.Seq import Seq
 
 
 
-
-def prepareReads(inputReads, outputDirectory, barcoding):
+#nit_picker.prepareReads(readInput, outputResultDirectory, sampleID, barcodeFileLocation, minimumReadLength, maximumReadLength, minimumQuality, maximumQuality )
+#inputReads and outputDirectory are necessary.  The rest can be "None" if you would like.            
+def prepareReads(inputReads, outputDirectory, sampleID, barcodeFileLocation, minimumReadLength, maximumReadLength, minimumReadQuality, maximumReadQuality ):
     print ('Preparing Reads')
     
-    reads = []
+    #TODO: Create an output file with read stats, like the read extractor did.
+    
+    allReads = minionReadCollection([])
+    
+    # Default sample id
+    if (sampleID is None):
+        sampleID = 'minion_reads'
 
     # Determine if input is a file, or a directory
-    if (os.path.isfile(inputReads)):
+    if (isfile(inputReads)):
         print ('Read input is a file that exists.')
-        reads = loadReadFile(inputReads)
-    elif (os.path.isdir(inputReads)):
+        allReads = createCollectionFromReadFile(inputReads)
+    elif (isdir(inputReads)):
         print ('Read input is a directory that exists.')
         for currentInputReadFile in os.listdir(inputReads):
             if (".fasta" == currentInputReadFile[-6:] or ".fa" == currentInputReadFile[-3:] or ".fastq"== currentInputReadFile[-6:] or ".fq" == currentInputReadFile[-3:]):
-                print ('loading reads from:' + str(os.path.join(inputReads,currentInputReadFile)))
-                reads = reads + loadReadFile(os.path.join(inputReads,currentInputReadFile))
+                print ('loading Reads from:' + str(join(inputReads,currentInputReadFile)))
+                newReads = createCollectionFromReadFile(join(inputReads,currentInputReadFile))
+                allReads.concatenate(newReads)
     else :
         print('I expect a .fasta or .fastq format for read input. Alternatively, specify a directory containing read inputs. Please check your input.')
         raise Exception('Bad Read Input Format')
     
-    print ('Total # of reads found = ' + str(len(reads)))
-    
-    readLengths = []
-    readAvgQualities = []
-    
-    for currentRead in reads:
-        #currentID = currentRead.id
+    print ('Total # of allReads found = ' + str(len(allReads.readCollection)))
+
+    passReads=[]
+    lengthRejectReads=[]
+    qualityRejectReads=[]
+
+    # Iterate all reads
+    print ('Rejecting reads for Length and Quality...')
+    for currentRead in allReads.readCollection:
+        
         phredQualities = currentRead.letter_annotations["phred_quality"]                    
         currentSeqLength = len(currentRead)
-        currentAvgQuality = numpy.mean(phredQualities)
+        currentAvgPhredQuality = numpy.mean(phredQualities)
         
-        readLengths.append(currentSeqLength)
-        readAvgQualities.append(currentAvgQuality)
-        
-        #print('Analyzing read:' + str(currentID))
-    
-    createScatterPlot("All Reads", readLengths, readAvgQualities, "Read Lengths", "Avg Read Quality(Phred)", os.path.join(outputDirectory, 'ReadDistribution'))
-    
-    
-    
-    
-def loadReadFile(readFile):
-    global readInputFormat
-    #print ('loading reads from:' + readFile)
-    
-    # Determine Input File Type
-    if (".fasta" == readFile[-6:] or ".fa" == readFile[-3:]):
-        readInputFormat = "fasta"
-    elif (".fastq"== readFile[-6:] or ".fq" == readFile[-3:]):
-        readInputFormat = "fastq"
-    else:
-        print('I expect a .fasta or .fastq format for read input. Alternatively, specify a directory containing read inputs. Please check your input.')
-        raise Exception('Bad Read Input Format')
-        
-    return list(SeqIO.parse(readFile, readInputFormat))    
-        
-def createScatterPlot(graphTitleText, xValues, yValues, xAxisName, yAxisName, outputFileName):
-    print('Creating a Scatter Plot: ' + outputFileName)
+        # Reject allReads that are wrong length
+        if( (minimumReadLength is not None and currentSeqLength < minimumReadLength)
+            or (maximumReadLength is not None and currentSeqLength > maximumReadLength)
+            ):
+            lengthRejectReads.append(currentRead)
+
+        # Reject allReads that have the wrong quality
+        elif( (minimumReadQuality is not None and currentAvgPhredQuality < minimumReadQuality)
+            or (maximumReadQuality is not None and currentAvgPhredQuality > maximumReadQuality)
+            ):
+            qualityRejectReads.append(currentRead)
       
-    #Clear the figure and start anew.
-    pylab.clf()
-    
-    # K is black, we need to repeat N times.
-    colors = ['K'] * len(xValues)
+        # This read is okay.
+        else:
+            passReads.append(currentRead)
+           
+    passReadCollection=minionReadCollection(passReads)
+    lengthRejectReadCollection=minionReadCollection(lengthRejectReads)
+    qualityRejectReadCollection=minionReadCollection(qualityRejectReads)
 
-    pylab.scatter(xValues, yValues, s=1, c=colors, marker='.')
+    # Create Scatterplots
+
+    if(len(allReads.readCollection)>0):
+        
+        allReads.calculateReadStats()        
+        minion_read_collection.createScatterPlot("All Reads"
+            , allReads.readLengths
+            , allReads.readAvgPhredQualities 
+            , "Read Lengths"
+            , "Avg Read Quality(Phred)"
+            , join(outputDirectory,  str(sampleID) + '_Unfiltered_Reads'))
+    if(len(lengthRejectReadCollection.readCollection)>0):
+        minion_read_collection.createScatterPlot("Length-Rejected Reads"
+            , lengthRejectReadCollection.readLengths
+            , lengthRejectReadCollection.readAvgPhredQualities 
+            , "Read Lengths"
+            , "Avg Read Quality(Phred)"
+            , join(outputDirectory, str(sampleID) + '_Length_Rejected_Reads'))
+    if(len(qualityRejectReadCollection.readCollection)>0):
+        minion_read_collection.createScatterPlot("Quality-Rejected Reads"
+            , qualityRejectReadCollection.readLengths
+            , qualityRejectReadCollection.readAvgPhredQualities 
+            , "Read Lengths"
+            , "Avg Read Quality(Phred)"
+            , join(outputDirectory, str(sampleID) + '_Quality_Rejected_Reads'))
+            
+    # Print fastq for Rejected Reads and all reads    
+    readFormat = allReads.readInputFormat
     
-    pylab.xlabel(xAxisName)
-    pylab.ylabel(yAxisName)
-    pylab.title(graphTitleText)
+    allReadOutputFile = createOutputFile(join(outputDirectory, str(sampleID) + '_Unfiltered_Reads.' + readFormat))
+    SeqIO.write(allReads.readCollection, allReadOutputFile, readFormat)
+    allReadOutputFile.close()
     
-    pylab.savefig(outputFileName)
+    lengthRejectReadOutputFile = createOutputFile(join(outputDirectory, str(sampleID) + '_Length_Rejected_Reads.' + readFormat))
+    SeqIO.write(lengthRejectReadCollection.readCollection, lengthRejectReadOutputFile, readFormat)
+    lengthRejectReadOutputFile.close()
+    
+    qualityRejectReadOutputFile = createOutputFile(join(outputDirectory, str(sampleID) + '_Quality_Rejected_Reads.' + readFormat))
+    SeqIO.write(qualityRejectReadCollection.readCollection, qualityRejectReadOutputFile, readFormat)
+    qualityRejectReadOutputFile.close()
+    
+
+    if(barcodeFileLocation is None):
+        print('No barcode file was provided. I will not attempt to de-multiplex the allReads.')
+        
+        
+        if(len(passReadCollection.readCollection)>0):
+            minion_read_collection.createScatterPlot("Pass Reads"
+                , passReadCollection.readLengths
+                , passReadCollection.readAvgPhredQualities 
+                , "Read Lengths"
+                , "Avg Read Quality(Phred)"
+                , join(outputDirectory,  str(sampleID) + '_PassReads'))
+            
+        passReadOutputFile = createOutputFile(join(outputDirectory, str(sampleID) + '_Pass.' + readFormat))
+        SeqIO.write(passReadCollection.readCollection, passReadOutputFile, readFormat)
+        passReadOutputFile.close()
+        
+        #qualityReadOutput
+        # Print Pass
+
+    else:
+        print('Provided Barcode File:' + str(barcodeFileLocation) + '\nI will de-multiplex the allReads.')
+        #print ('Just kidding, you still need to add this code.  Do it now.')
+        # Debarcode pass reads
+        
+        #def splitByBarcode(readCollection, outputDirectory, barcodeFileNameWithPath):
+        splitByBarcode(passReadCollection, outputDirectory, barcodeFileLocation, sampleID)
+    
+    
+
+
+
          
-
-# Short method to print out summary stats for a group of reads
+# TODO: Am i using this?
+# Short method to print out summary stats for a group of allReads
 def writeReadStatsSub(readType, barcode, readStats):
     
     statsSubText=''        
